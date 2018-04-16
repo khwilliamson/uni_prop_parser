@@ -143,7 +143,7 @@ sub blob_as_code {
     $blob_name ||= "mph_blob";
 
     # output the blob as C code.
-    my @code= (sprintf "STATIC const unsigned char %s[] = (unsigned char *)\n",$blob_name);
+    my @code= (sprintf "STATIC const unsigned char %s[] =\n",$blob_name);
     my $blob_len= length $blob;
     while (length($blob)) {
         push @code, sprintf qq(    "%s"), substr($blob,0,65,"");
