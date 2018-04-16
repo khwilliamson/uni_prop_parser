@@ -143,7 +143,7 @@ sub blob_as_code {
     $blob_name ||= "mph_blob";
 
     # output the blob as C code.
-    my @code= (sprintf "const unsigned char %s[] =\n",$blob_name);
+    my @code= (sprintf "STATIC const unsigned char %s[] = (unsigned char *)\n",$blob_name);
     my $blob_len= length $blob;
     while (length($blob)) {
         push @code, sprintf qq(    "%s"), substr($blob,0,65,"");
@@ -190,13 +190,13 @@ sub build_array_of_struct {
             index($blob,$row->{prefix}//0),
             index($blob,$row->{suffix}//0),
         );
-        $_ > 0xFFFF and die "panic: value exceeds range of uint16_t"
+        $_ > 0xFFFF and die "panic: value exceeds range of U16"
             for @u16;
         my @u8= (
             length($row->{prefix}),
             length($row->{suffix}),
         );
-        $_ > 0xFF and die "panic: value exceeds range of uint8_t"
+        $_ > 0xFF and die "panic: value exceeds range of U8"
             for @u8;
         push @rows, sprintf("  { %5d, %5d, %5d, %3d, %3d, %s }",
             @u16, @u8, $row->{value} );
@@ -204,61 +204,55 @@ sub build_array_of_struct {
     return \@rows,\%defines,\%tests;
 }
 
-sub print_algo {
-    my ($ofh, $second_level, $seed1, $long_blob, $smart_blob, $rows,
+sub make_algo {
+    my ($second_level, $seed1, $long_blob, $smart_blob, $rows,
         $blob_name, $struct_name, $table_name, $match_name) = @_;
 
     $blob_name ||= "mph_blob";
     $struct_name ||= "mph_struct";
     $table_name ||= "mph_table";
 
-    if (!ref $ofh) {
-        my $file= $ofh;
-        undef $ofh;
-        open $ofh, ">", $file
-            or die "Failed to open '$file': $!";
-    }
-
     my $n= 0+@$second_level;
     my $data_size= 0+@$second_level * 8 + length $smart_blob;
 
-    print $ofh "/*\n";
-    printf $ofh "rows: %s\n", $n;
-    printf $ofh "seed: %s\n", $seed1;
-    printf $ofh "full length of keys: %d\n", length $long_blob;
-    printf $ofh "blob length: %d\n", length $smart_blob;
-    printf $ofh "ref length: %d\n", 0+@$second_level * 8;
-    printf $ofh "data size: %d (%%%.2f)\n", $data_size, ($data_size / length $long_blob) * 100;
-    print $ofh "*/\n\n";
+    my @code = "#define MPH_VALt I16\n\n";
+    push @code, "/*\n";
+    push @code, sprintf "rows: %s\n", $n;
+    push @code, sprintf "seed: %s\n", $seed1;
+    push @code, sprintf "full length of keys: %d\n", length $long_blob;
+    push @code, sprintf "blob length: %d\n", length $smart_blob;
+    push @code, sprintf "ref length: %d\n", 0+@$second_level * 8;
+    push @code, sprintf "data size: %d (%%%.2f)\n", $data_size, ($data_size / length $long_blob) * 100;
+    push @code, "*/\n\n";
 
-    print $ofh blob_as_code($smart_blob, $blob_name);
-    print $ofh <<"EOF_CODE";
+    push @code, blob_as_code($smart_blob, $blob_name);
+    push @code, <<"EOF_CODE";
 
 struct $struct_name {
-    uint16_t seed2;
-    uint16_t pfx;
-    uint16_t sfx;
-    uint8_t  pfx_len;
-    uint8_t  sfx_len;
+    U16 seed2;
+    U16 pfx;
+    U16 sfx;
+    U8  pfx_len;
+    U8  sfx_len;
     MPH_VALt value;
 };
 
 EOF_CODE
 
-    print $ofh "#define MPH_RSHIFT $RSHIFT\n";
-    printf $ofh "const uint32_t MPH_SEED1 = 0x%08x;\n", $seed1;
-    printf $ofh "const uint32_t MPH_FNV_CONST = 0x%08x;\n", $FNV_CONST;
-    print $ofh "const uint16_t MPH_BUCKETS = $n;\n\n";
+    push @code, "#define MPH_RSHIFT $RSHIFT\n";
+    push @code, sprintf "STATIC const U32 MPH_SEED1 = 0x%08x;\n", $seed1;
+    push @code, sprintf "STATIC const U32 MPH_FNV_CONST = 0x%08x;\n", $FNV_CONST;
+    push @code, "STATIC const U16 MPH_BUCKETS = $n;\n\n";
 
-    print $ofh "\n";
-    print $ofh "const struct $struct_name $table_name\[$n] = {\n", join(",\n", @$rows)."\n};\n\n";
-    print $ofh <<"EOF_CODE";
-MPH_VALt $match_name( const unsigned char * const key, const uint16_t key_len ) {
+    push @code, "\n";
+    push @code, "STATIC const struct $struct_name $table_name\[$n] = {\n", join(",\n", @$rows)."\n};\n\n";
+    push @code, <<"EOF_CODE";
+MPH_VALt $match_name( const unsigned char * const key, const U16 key_len ) {
     const unsigned char * ptr= key;
     const unsigned char * ptr_end= key+key_len;
-    uint32_t h= MPH_SEED1 + key_len;
-    uint32_t s;
-    uint32_t n;
+    U32 h= MPH_SEED1 + key_len;
+    U32 s;
+    U32 n;
     do {
         h  = (h ^ *ptr) * MPH_FNV_CONST;
     } while ( ++ptr < ptr_end );
@@ -279,12 +273,30 @@ MPH_VALt $match_name( const unsigned char * const key, const uint16_t key_len ) 
     return 0;
 }
 EOF_CODE
+
+    return join "", @code;
+}
+
+sub print_algo {
+    my ($ofh, $second_level, $seed1, $long_blob, $smart_blob, $rows,
+        $blob_name, $struct_name, $table_name, $match_name ) = @_;
+
+    if (!ref $ofh) {
+        my $file= $ofh;
+        undef $ofh;
+        open $ofh, ">", $file
+            or die "Failed to open '$file': $!";
+    }
+
+    my $code = make_algo(
+        $second_level, $seed1, $long_blob, $smart_blob, $rows,
+        $blob_name, $struct_name, $table_name, $match_name );
+    print $ofh $code;
 }
 
 sub print_main {
     my ($ofh,$h_file,$match_name)=@_;
     print $ofh <<"EOF_CODE";
-#define MPH_VALt int16_t
 #include "$h_file"
 
 int main(int argc, char *argv[]){
